@@ -1,0 +1,7 @@
+# Cloned repositories
+/repositories/
+
+#
+.env
+.env.*
+!.env.example
