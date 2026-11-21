@@ -10,7 +10,8 @@ It provides scripts and Docker Compose configurations to clone the microservice 
 configuration/
 │
 ├── docker_composes/
-│   └── sales_rabbitmq.yaml
+│   ├── sales_rabbitmq.yaml
+│   └── sales_rabbitmq.repos
 │
 ├── env_files/
 │   └── .env.example.sales_rabbitmq
@@ -21,17 +22,26 @@ configuration/
 │   ├── tickets/
 │   └── notifications/
 │
+├── scripts/
+│   ├── setup.bat
+│   └── setup.sh
+│
 ├── .env.example
 ├── .gitignore
-├── README.md
-└── setup.bat
+└── README.md
 ```
 
 ### Directories
 
-- **`docker_composes/`**: Contains the Docker Compose configurations for the different local environments. Each configuration combines the Compose files of the required microservices using Docker Compose `include`.
+- **`docker_composes/`**: Contains the Docker Compose configurations for the different local environments. Each configuration combines the Compose files of the required microservices using Docker Compose `include`. Each configuration can have an optional `.repos` file listing the repositories it requires (see below).
 - **`env_files/`**: Contains environment configuration examples for each testing environment. Each example combines the variables required by the microservices included in that environment.
 - **`repositories/`**: Contains the microservice repositories cloned from the GitHub organization.
+- **`scripts/`**: Contains the setup scripts: `setup.bat` for Windows and `setup.sh` for Linux and macOS. Both behave identically.
+
+## Prerequisites
+
+- [Git](https://git-scm.com/)
+- [Docker](https://www.docker.com/) (Docker Desktop on Windows and macOS) with Docker Compose v2
 
 ## Configuration
 
@@ -88,53 +98,141 @@ include:
 
 This approach allows multiple microservices to be started together while keeping their individual Docker Compose configurations independent.
 
-## Usage
+### Adding a new environment
 
-Run the main setup script:
+1. Create a new `.yaml` (or `.yml`) file in `docker_composes/`.
+2. Optionally create a `.repos` file with the same name (see below).
 
-```bat
-setup.bat
+No script changes are needed: the scripts scan `docker_composes/` every time and list every environment they find.
+
+### Required repositories (`.repos`)
+
+A `.repos` file with the same name as a Compose file declares which repositories that environment needs. It contains a single line of space-separated repository names.
+
+Example: `docker_composes/sales_rabbitmq.repos`
+
+```text
+sales rabbitMQ
 ```
 
-The script provides the following options:
+Before starting an environment, the scripts check that each listed repository has been cloned. If the `.repos` file does not exist, the check is skipped.
+
+## Usage
+
+Run the setup script from any location. It automatically finds the project root by looking for the `docker_composes/` folder in the script's parent directories.
+
+**Windows:**
+
+```bat
+scripts\setup.bat
+```
+
+**Linux / macOS:**
+
+```bash
+chmod +x scripts/setup.sh
+./scripts/setup.sh
+```
+
+### Main menu
+
+The menu is built dynamically. Every Compose file found in `docker_composes/` is listed as a numbered entry, followed by the two global actions. For example, with one environment:
+
+```text
+1. sales_rabbitmq.yaml
+
+2. Clone all repositories
+3. Stop everything (removes containers AND volumes)
+
+0. Exit
+```
+
+The numbers of the global actions shift as environments are added.
 
 | Option | Description |
 |---|---|
-| `1` | Clone all configured repositories from GitHub |
-| `2` | Start the Sales + RabbitMQ environment |
-| `3` | Stop all configured environments and remove containers and volumes |
+| `1..N` | Select an environment and open its menu |
+| `N+1` | Clone all configured repositories from GitHub |
+| `N+2` | Stop all environments and remove containers and volumes |
 | `0` | Exit |
 
-### Clone all repositories
+### Environment menu
 
-Select option `1`.
+After selecting an environment:
+
+| Option | Description |
+|---|---|
+| `1` | Start the environment |
+| `2` | Stop the environment and remove its containers and volumes |
+| `0` | Back to the main menu |
+
+### Clone all repositories
 
 The script reads the root `.env` file, creates the `repositories/` directory if necessary, and clones all configured repositories.
 
 Already cloned repositories are skipped.
 
-### Start Sales + RabbitMQ
-
-Select option `2`.
+### Start an environment
 
 The script checks that:
 
 - Docker is running.
 - `env_files/.env` exists.
-- The Sales repository has been cloned.
-- The RabbitMQ repository has been cloned.
-- The corresponding Docker Compose configuration exists.
+- The Compose file exists.
+- All repositories listed in the `.repos` file (if present) have been cloned.
 
 It then starts the environment using:
 
-```bat
-docker compose -f docker_composes/sales_rabbitmq.yaml up -d
+```bash
+docker compose -f docker_composes/<environment>.yaml up -d
+```
+
+### Stop an environment
+
+After confirmation, the script executes:
+
+```bash
+docker compose -f docker_composes/<environment>.yaml down -v --remove-orphans
 ```
 
 ### Stop everything
 
-Select option `3`.
-
 After confirmation, the script executes `docker compose down -v --remove-orphans` for every YAML configuration inside `docker_composes/`.
 
-**Warning:** This operation removes containers, networks and persistent volumes. All stored data, including database contents and RabbitMQ data, will be lost.
+**Warning:** Both stop operations remove containers, networks and persistent volumes. All stored data, including database contents and RabbitMQ data, will be lost.
+
+## Line endings
+
+Files mounted into containers (for example shell scripts such as RabbitMQ's `entrypoint.sh`) must use LF line endings. With CRLF, the container shell fails with errors like `Illegal option -`.
+
+On Windows, Git may convert files to CRLF on clone (`core.autocrlf=true`). To avoid this, every microservice repository must contain a `.gitattributes` file that forces LF:
+
+```text
+* text=auto
+*.sh       text eol=lf
+*.conf     text eol=lf
+*.template text eol=lf
+*.json     text eol=lf
+*.yaml     text eol=lf
+*.yml      text eol=lf
+```
+
+This takes precedence over the local Git configuration, so it works on any machine. Apply it to existing files with:
+
+```bash
+git add --renormalize .
+git commit -m "Force LF line endings"
+```
+
+To check the line endings of a cloned repository, run `git ls-files --eol`: the `w/` column must be `w/lf` for the files mounted into containers.
+
+## Troubleshooting
+
+| Problem | Cause and fix |
+|---|---|
+| `docker_composes\ folder not found` | The script could not find `docker_composes/` in any parent directory. Check that the folder exists and that the script is inside the project. |
+| `No compose files found` | `docker_composes/` has no `.yaml` or `.yml` files. |
+| `env_files/.env not found` | Copy the example file from `env_files/` and name it `.env`. |
+| `Repository ... not found` | Run **Clone all repositories** first. |
+| Container fails with `Illegal option -` | A script has CRLF line endings. See [Line endings](#line-endings). |
+| `bash\r` or `$'\r': command not found` on Linux/macOS | `setup.sh` was saved with CRLF. Run `sed -i 's/\r$//' scripts/setup.sh` (on macOS: `sed -i '' 's/\r$//' scripts/setup.sh`). |
