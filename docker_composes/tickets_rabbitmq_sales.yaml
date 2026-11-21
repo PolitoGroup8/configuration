@@ -1,0 +1,9 @@
+name: tickes_sales_rabbitmq
+
+include:
+  - path: ../repositories/tickets/docker-compose.yaml
+    env_file: ../env_files/.env
+  - path: ../repositories/rabbitMQ/docker-compose.yml
+    env_file: ../env_files/.env
+  - path: ../repositories/sales/docker-compose.yaml
+    env_file: ../env_files/.env

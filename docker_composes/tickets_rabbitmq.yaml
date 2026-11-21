@@ -1,4 +1,4 @@
-name: sales_rabbitmq
+name: tickets_rabbitmq
 
 include:
   - path: ../repositories/tickets/docker-compose.yaml
