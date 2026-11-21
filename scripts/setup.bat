@@ -1,356 +1,340 @@
-#!/usr/bin/env bash
-# ------------------------------------------------------------
-# setup.sh - equivalent of setup.bat (Linux / macOS)
-# ------------------------------------------------------------
+@echo off
+setlocal EnableDelayedExpansion
 
-pause() {
-    echo
-    read -n 1 -s -r -p "Press any key to continue..."
-    echo
-}
+REM Find the project root: go up from the script folder until docker_composes\ is found
+pushd "%~dp0"
+set "ROOT_FOUND="
+for /l %%I in (1,1,4) do (
+    if not defined ROOT_FOUND (
+        if exist "docker_composes\" (
+            set "ROOT_FOUND=1"
+        ) else (
+            cd ..
+        )
+    )
+)
 
-# Find the project root: go up from the script folder until docker_composes/ is found
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT=""
-dir="$SCRIPT_DIR"
-for _ in 1 2 3 4; do
-    if [[ -d "$dir/docker_composes" ]]; then
-        ROOT="$dir"
-        break
-    fi
-    dir="$(dirname "$dir")"
-done
-
-if [[ -z "$ROOT" ]]; then
-    echo "[ERROR] docker_composes/ folder not found in any parent directory of the script."
+if not defined ROOT_FOUND (
+    echo [ERROR] docker_composes\ folder not found in any parent directory of the script.
     pause
-    exit 1
-fi
+    popd
+    endlocal
+    exit /b 1
+)
 
-cd "$ROOT" || exit 1
+:menu
+cls
+echo ========================================
+echo       TICKETING - SELECT STACK
+echo ========================================
+echo.
 
-COMPOSES=()
-COMPOSE_FILE=""
-COMPOSE_BASE=""
+REM Scan available compose files
+set "COUNT=0"
+for %%F in (docker_composes\*.yaml docker_composes\*.yml) do (
+    set /a COUNT+=1
+    set "COMPOSE_!COUNT!=%%F"
+    set "BASE_!COUNT!=%%~dpnF"
+    echo !COUNT!. %%~nxF
+)
 
-scan_composes() {
-    COMPOSES=()
-    local f
-    for f in docker_composes/*.yaml docker_composes/*.yml; do
-        [[ -e "$f" ]] && COMPOSES+=("$f")
-    done
-}
+if "!COUNT!"=="0" echo [WARNING] No compose files found in docker_composes\.
 
-# ------------------------------------------------------------
-# Clone all repositories
-# ------------------------------------------------------------
-clone_all() {
-    clear
-    echo "========================================"
-    echo "      TICKETING - REPOSITORY SETUP"
-    echo "========================================"
+set /a CLONE_NUM=COUNT+1
+set /a DOWNALL_NUM=COUNT+2
 
-    if [[ ! -f ".env" ]]; then
-        echo "[ERROR] .env file not found."
-        return 1
-    fi
+echo.
+echo !CLONE_NUM!. Clone all repositories
+echo !DOWNALL_NUM!. Stop everything (removes containers AND volumes)
+echo.
+echo 0. Exit
+echo.
+set "CHOICE="
+set /p "CHOICE=Select an option: "
 
-    # Load environment variables (skip comments and empty lines, strip CR)
-    local line key value
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%$'\r'}"
-        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
-        key="${line%%=*}"
-        value="${line#*=}"
-        [[ -z "$key" ]] && continue
-        printf -v "$key" '%s' "$value"
-    done < ".env"
+if "!CHOICE!"=="0" goto exit
+if "!CHOICE!"=="!CLONE_NUM!" goto clone_all
+if "!CHOICE!"=="!DOWNALL_NUM!" goto down_all
 
-    if [[ -z "${GITHUB_ORG:-}" ]]; then
-        echo "[ERROR] GITHUB_ORG is not configured."
-        return 1
-    fi
+REM Validate: must be a number between 1 and COUNT
+set "COMPOSE_FILE="
+for /l %%I in (1,1,!COUNT!) do (
+    if "!CHOICE!"=="%%I" (
+        set "COMPOSE_FILE=!COMPOSE_%%I!"
+        set "COMPOSE_BASE=!BASE_%%I!"
+    )
+)
 
-    if [[ -z "${REPOSITORIES:-}" ]]; then
-        echo "[ERROR] REPOSITORIES is not configured."
-        return 1
-    fi
+if defined COMPOSE_FILE goto stack_menu
 
-    echo
-    echo "========================================"
-    echo "      LOADED ENVIRONMENT"
-    echo "========================================"
-    echo "GITHUB_ORG: $GITHUB_ORG"
-    echo "REPOSITORIES: $REPOSITORIES"
-    echo "========================================"
-    echo
+echo.
+echo [ERROR] Invalid option.
+pause
+goto menu
 
-    if ! command -v git >/dev/null 2>&1; then
-        echo "[ERROR] Git is not installed or not available in PATH."
-        return 1
-    fi
 
-    mkdir -p "repositories"
+:stack_menu
+cls
+echo ========================================
+echo       STACK: !COMPOSE_FILE!
+echo ========================================
+echo.
+echo 1. Start
+echo 2. Down (removes containers AND volumes)
+echo.
+echo 0. Back
+echo.
+set "ACTION="
+set /p "ACTION=Select an option: "
 
-    # Normalize repository list (commas -> spaces)
-    local repos="${REPOSITORIES//,/ }"
+if "!ACTION!"=="1" goto start_stack
+if "!ACTION!"=="2" goto down_stack
+if "!ACTION!"=="0" goto menu
 
-    echo
-    echo "========================================"
-    echo "      CLONING REPOSITORIES"
-    echo "========================================"
+echo.
+echo [ERROR] Invalid option.
+pause
+goto stack_menu
 
-    local repo
-    for repo in $repos; do
-        if [[ ! -d "repositories/$repo/.git" ]]; then
-            if [[ -d "repositories/$repo" ]]; then
-                echo "[ERROR] Invalid directory: $repo"
-                return 1
-            fi
 
-            echo "[INFO] Cloning $repo..."
+:clone_all
+cls
 
-            if ! git clone "https://github.com/${GITHUB_ORG}/${repo}.git" "repositories/$repo"; then
-                echo "[ERROR] Failed to clone $repo."
-                return 1
-            fi
+echo ========================================
+echo       TICKETING - REPOSITORY SETUP
+echo ========================================
 
-            echo "[SUCCESS] $repo cloned."
-        else
-            echo "[SKIP] $repo already exists."
-        fi
-    done
+if not exist ".env" (
+    echo [ERROR] .env file not found.
+    pause
+    goto menu
+)
 
-    echo
-    echo "[SUCCESS] All repositories are ready."
-    return 0
-}
+REM Load environment variables
+for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
+    if not "%%A"=="" set "%%A=%%B"
+)
 
-# ------------------------------------------------------------
-# Start selected stack
-# ------------------------------------------------------------
-start_stack() {
-    clear
-    echo "========================================"
-    echo "      START: $COMPOSE_FILE"
-    echo "========================================"
-    echo
+if not defined GITHUB_ORG (
+    echo [ERROR] GITHUB_ORG is not configured.
+    pause
+    goto menu
+)
 
-    if ! docker info >/dev/null 2>&1; then
-        echo "[ERROR] Docker is not running. Start Docker and retry."
-        return 1
-    fi
+if not defined REPOSITORIES (
+    echo [ERROR] REPOSITORIES is not configured.
+    pause
+    goto menu
+)
 
-    if [[ ! -f "env_files/.env" ]]; then
-        echo "[ERROR] env_files/.env not found. Copy the .example file and fill it in."
-        return 1
-    fi
+echo.
+echo ========================================
+echo       LOADED ENVIRONMENT
+echo ========================================
+echo GITHUB_ORG: !GITHUB_ORG!
+echo REPOSITORIES: !REPOSITORIES!
+echo ========================================
+echo.
 
-    if [[ ! -f "$COMPOSE_FILE" ]]; then
-        echo "[ERROR] $COMPOSE_FILE not found."
-        return 1
-    fi
+REM Check Git installation
+where git >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Git is not installed or not available in PATH.
+    pause
+    goto menu
+)
 
-    # Required repositories for this stack (optional file: <compose name>.repos)
-    local repos_file="${COMPOSE_BASE}.repos"
-    if [[ -f "$repos_file" ]]; then
-        local required=""
-        read -r required < "$repos_file" || true
-        required="${required%$'\r'}"
-        local repo
-        for repo in $required; do
-            if [[ ! -d "repositories/$repo/.git" ]]; then
-                echo "[ERROR] Repository $repo not found. Use the clone option first."
-                return 1
-            fi
-        done
-    fi
+REM Create repositories directory
+if not exist "repositories" mkdir "repositories"
 
-    docker compose -f "$COMPOSE_FILE" up -d
-    local exitcode=$?
+REM Normalize repository list
+set "REPOSITORIES=!REPOSITORIES:,= !"
 
-    echo
-    if [[ $exitcode -ne 0 ]]; then
-        echo "========================================"
-        echo "[ERROR] Docker Compose failed with exit code $exitcode."
-        echo "        Read the messages above before continuing."
-        echo "========================================"
-    else
-        echo "[SUCCESS] $COMPOSE_FILE started."
-    fi
-    return 0
-}
+echo.
+echo ========================================
+echo       CLONING REPOSITORIES
+echo ========================================
 
-# ------------------------------------------------------------
-# Down selected stack
-# ------------------------------------------------------------
-down_stack() {
-    clear
-    echo "========================================"
-    echo "      DOWN: $COMPOSE_FILE"
-    echo "========================================"
-    echo
-    echo "[WARNING] This stops this stack and removes"
-    echo "          containers, networks and VOLUMES."
-    echo "          All data (database, queues) will be lost."
-    echo
+for %%R in (!REPOSITORIES!) do (
+    if not exist "repositories\%%R\.git" (
+        if exist "repositories\%%R" (
+            echo [ERROR] Invalid directory: %%R
+            pause
+            goto menu
+        )
 
-    if ! docker info >/dev/null 2>&1; then
-        echo "[ERROR] Docker is not running."
-        return 1
-    fi
+        echo [INFO] Cloning %%R...
 
-    local confirm=""
-    read -r -p "Are you sure? (y/n): " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        echo "Operation cancelled."
-        return 0
-    fi
+        git clone "https://github.com/!GITHUB_ORG!/%%R.git" "repositories\%%R"
 
-    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans
-    local exitcode=$?
+        if errorlevel 1 (
+            echo [ERROR] Failed to clone %%R.
+            pause
+            goto menu
+        )
 
-    echo
-    if [[ $exitcode -ne 0 ]]; then
-        echo "========================================"
-        echo "[ERROR] Failed to stop $COMPOSE_FILE (exit code $exitcode)."
-        echo "        Read the messages above."
-        echo "========================================"
-    else
-        echo "[SUCCESS] $COMPOSE_FILE stopped. Containers and volumes removed."
-    fi
-    return 0
-}
+        echo [SUCCESS] %%R cloned.
+    ) else (
+        echo [SKIP] %%R already exists.
+    )
+)
 
-# ------------------------------------------------------------
-# Stop everything
-# ------------------------------------------------------------
-down_all() {
-    clear
-    echo "========================================"
-    echo "      STOP EVERYTHING"
-    echo "========================================"
-    echo
-    echo "[WARNING] This stops every stack in docker_composes/ and removes"
-    echo "          containers, networks and VOLUMES."
-    echo "          All data (database, queues) will be lost."
-    echo
+echo.
+echo [SUCCESS] All repositories are ready.
+pause
+goto menu
 
-    if ! docker info >/dev/null 2>&1; then
-        echo "[ERROR] Docker is not running."
-        return 1
-    fi
 
-    local confirm=""
-    read -r -p "Are you sure? (y/n): " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        echo "Operation cancelled."
-        return 0
-    fi
+:start_stack
+cls
+echo ========================================
+echo       START: !COMPOSE_FILE!
+echo ========================================
+echo.
 
-    local has_error=0 f
-    scan_composes
-    for f in "${COMPOSES[@]}"; do
-        echo "[INFO] Stopping $f..."
-        if ! docker compose -f "$f" down -v --remove-orphans; then
-            echo "[ERROR] Failed to stop $f."
-            has_error=1
-        fi
-    done
+docker info >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Docker is not running. Start Docker Desktop and retry.
+    pause
+    goto stack_menu
+)
 
-    echo
-    if [[ $has_error -eq 1 ]]; then
-        echo "========================================"
-        echo "[ERROR] Some stacks failed to stop. Read the messages above."
-        echo "========================================"
-    else
-        echo "[SUCCESS] Everything stopped. Containers and volumes removed."
-    fi
-    return 0
-}
+if not exist "env_files\.env" (
+    echo [ERROR] env_files\.env not found. Copy the .example file and fill it in.
+    pause
+    goto stack_menu
+)
 
-# ------------------------------------------------------------
-# Stack menu (Start / Down)
-# ------------------------------------------------------------
-stack_menu() {
-    local action
-    while true; do
-        clear
-        echo "========================================"
-        echo "      STACK: $COMPOSE_FILE"
-        echo "========================================"
-        echo
-        echo "1. Start"
-        echo "2. Down (removes containers AND volumes)"
-        echo
-        echo "0. Back"
-        echo
-        action=""
-        read -r -p "Select an option: " action
+if not exist "!COMPOSE_FILE!" (
+    echo [ERROR] !COMPOSE_FILE! not found.
+    pause
+    goto stack_menu
+)
 
-        case "$action" in
-            1) start_stack; pause ;;
-            2) down_stack; pause ;;
-            0) return 0 ;;
-            *) echo; echo "[ERROR] Invalid option."; pause ;;
-        esac
-    done
-}
+REM Required repositories for this stack (optional file: <compose name>.repos)
+set "REPOS_FILE=!COMPOSE_BASE!.repos"
+if exist "!REPOS_FILE!" (
+    set "REQUIRED="
+    set /p REQUIRED=<"!REPOS_FILE!"
+    for %%R in (!REQUIRED!) do (
+        if not exist "repositories\%%R\.git" (
+            echo [ERROR] Repository %%R not found. Use the clone option first.
+            pause
+            goto stack_menu
+        )
+    )
+)
 
-# ------------------------------------------------------------
-# Main menu
-# ------------------------------------------------------------
-while true; do
-    clear
-    echo "========================================"
-    echo "      TICKETING - SELECT STACK"
-    echo "========================================"
-    echo
+docker compose -f "!COMPOSE_FILE!" up -d
+set "EXITCODE=!errorlevel!"
 
-    scan_composes
-    count=${#COMPOSES[@]}
+echo.
+if not "!EXITCODE!"=="0" (
+    echo ========================================
+    echo [ERROR] Docker Compose failed with exit code !EXITCODE!.
+    echo         Read the messages above before continuing.
+    echo ========================================
+) else (
+    echo [SUCCESS] !COMPOSE_FILE! started.
+)
+echo.
+pause
+goto stack_menu
 
-    i=0
-    for f in "${COMPOSES[@]}"; do
-        i=$((i + 1))
-        echo "$i. $(basename "$f")"
-    done
 
-    if [[ $count -eq 0 ]]; then
-        echo "[WARNING] No compose files found in docker_composes/."
-    fi
+:down_stack
+cls
+echo ========================================
+echo       DOWN: !COMPOSE_FILE!
+echo ========================================
+echo.
+echo [WARNING] This stops this stack and removes
+echo           containers, networks and VOLUMES.
+echo           All data (database, queues) will be lost.
+echo.
 
-    clone_num=$((count + 1))
-    downall_num=$((count + 2))
+docker info >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Docker is not running.
+    pause
+    goto stack_menu
+)
 
-    echo
-    echo "$clone_num. Clone all repositories"
-    echo "$downall_num. Stop everything (removes containers AND volumes)"
-    echo
-    echo "0. Exit"
-    echo
+set "CONFIRM="
+set /p "CONFIRM=Are you sure? (y/n): "
+if /i not "!CONFIRM!"=="y" (
+    echo Operation cancelled.
+    pause
+    goto stack_menu
+)
 
-    choice=""
-    read -r -p "Select an option: " choice
+docker compose -f "!COMPOSE_FILE!" down -v --remove-orphans
+set "EXITCODE=!errorlevel!"
 
-    if [[ "$choice" == "0" ]]; then
-        exit 0
-    elif [[ "$choice" == "$clone_num" ]]; then
-        clone_all; pause
-        continue
-    elif [[ "$choice" == "$downall_num" ]]; then
-        down_all; pause
-        continue
-    fi
+echo.
+if not "!EXITCODE!"=="0" (
+    echo ========================================
+    echo [ERROR] Failed to stop !COMPOSE_FILE! ^(exit code !EXITCODE!^).
+    echo         Read the messages above.
+    echo ========================================
+) else (
+    echo [SUCCESS] !COMPOSE_FILE! stopped. Containers and volumes removed.
+)
+echo.
+pause
+goto stack_menu
 
-    # Validate: must be a number between 1 and count
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-        COMPOSE_FILE="${COMPOSES[$((choice - 1))]}"
-        COMPOSE_BASE="${COMPOSE_FILE%.*}"
-        stack_menu
-    else
-        echo
-        echo "[ERROR] Invalid option."
-        pause
-    fi
-done
+
+:down_all
+cls
+echo ========================================
+echo       STOP EVERYTHING
+echo ========================================
+echo.
+echo [WARNING] This stops every stack in docker_composes\ and removes
+echo           containers, networks and VOLUMES.
+echo           All data (database, queues) will be lost.
+echo.
+
+docker info >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Docker is not running.
+    pause
+    goto menu
+)
+
+set "CONFIRM="
+set /p "CONFIRM=Are you sure? (y/n): "
+if /i not "!CONFIRM!"=="y" (
+    echo Operation cancelled.
+    pause
+    goto menu
+)
+
+for %%F in (docker_composes\*.yaml docker_composes\*.yml) do (
+    echo [INFO] Stopping %%F...
+    docker compose -f "%%F" down -v --remove-orphans
+    if errorlevel 1 (
+        echo [ERROR] Failed to stop %%F.
+        set "HAS_ERROR=1"
+    )
+)
+
+echo.
+if defined HAS_ERROR (
+    echo ========================================
+    echo [ERROR] Some stacks failed to stop. Read the messages above.
+    echo ========================================
+    set "HAS_ERROR="
+) else (
+    echo [SUCCESS] Everything stopped. Containers and volumes removed.
+)
+echo.
+pause
+goto menu
+
+
+:exit
+popd
+endlocal
+exit /b 0
